@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { HooksConsentRequest } from '../../../core/src/messages.js';
+import type {
+  HerdrWorkspace,
+  HooksConsentRequest,
+  OmoLifecycle,
+  OmoWaitingOn,
+} from '../../../core/src/messages.js';
 import { playDoneSound, playPermissionSound, setSoundEnabled } from '../notificationSound.js';
 import type { ExistingAgentMeta, PendingAgent } from '../office/engine/existingAgents.js';
 import { reconcileExistingAgents } from '../office/engine/existingAgents.js';
@@ -87,6 +92,16 @@ export interface DirectorySaved {
   seq: number;
 }
 
+export interface AgentOmoState {
+  workspaceId: string;
+  paneId: string;
+  sessionName?: string;
+  activity?: string;
+  lifecycle: OmoLifecycle;
+  waitingOn: OmoWaitingOn;
+  herdrStatus?: string;
+}
+
 interface ExtensionMessageState {
   agents: number[];
   selectedAgent: number | null;
@@ -98,6 +113,9 @@ interface ExtensionMessageState {
   agentSeenActivity: Record<number, boolean>;
   subagentTools: Record<number, Record<string, ToolActivity[]>>;
   subagentCharacters: SubagentCharacter[];
+  workspaces: HerdrWorkspace[];
+  roomsMode: boolean;
+  agentOmoInfos: Record<number, AgentOmoState>;
   layoutReady: boolean;
   layoutWasReset: boolean;
   loadedAssets?: { catalog: FurnitureAsset[]; sprites: Record<string, string[][]> };
@@ -189,6 +207,9 @@ export function useExtensionMessages(
     Record<number, Record<string, ToolActivity[]>>
   >({});
   const [subagentCharacters, setSubagentCharacters] = useState<SubagentCharacter[]>([]);
+  const [workspaces, setWorkspaces] = useState<HerdrWorkspace[]>([]);
+  const [roomsMode, setRoomsMode] = useState(false);
+  const [agentOmoInfos, setAgentOmoInfos] = useState<Record<number, AgentOmoState>>({});
   const [layoutReady, setLayoutReady] = useState(false);
   const [layoutWasReset, setLayoutWasReset] = useState(false);
   const [loadedAssets, setLoadedAssets] = useState<
@@ -314,19 +335,22 @@ export function useExtensionMessages(
       }
 
       if (msg.type === 'layoutLoaded') {
-        // Skip external layout updates while editor has unsaved changes
-        if (layoutReadyRef.current && isEditDirty?.()) {
-          console.log('[Webview] Skipping external layout update — editor has unsaved changes');
-          return;
-        }
-        const rawLayout = msg.layout as OfficeLayout | null;
-        const layout = rawLayout && rawLayout.version === 1 ? migrateLayoutColors(rawLayout) : null;
-        if (layout) {
-          os.rebuildFromLayout(layout);
-          onLayoutLoaded?.(layout);
-        } else {
-          // Default layout — snapshot whatever OfficeState built
-          onLayoutLoaded?.(os.getLayout());
+        if (!os.roomsMode) {
+          // Skip external layout updates while editor has unsaved changes
+          if (layoutReadyRef.current && isEditDirty?.()) {
+            console.log('[Webview] Skipping external layout update — editor has unsaved changes');
+            return;
+          }
+          const rawLayout = msg.layout as OfficeLayout | null;
+          const layout =
+            rawLayout && rawLayout.version === 1 ? migrateLayoutColors(rawLayout) : null;
+          if (layout) {
+            os.rebuildFromLayout(layout);
+            onLayoutLoaded?.(layout);
+          } else {
+            // Default layout — snapshot whatever OfficeState built
+            onLayoutLoaded?.(os.getLayout());
+          }
         }
         // Add buffered agents now that layout (and seats) are correct
         for (const p of pendingAgents) {
@@ -336,12 +360,43 @@ export function useExtensionMessages(
         pendingAgents = [];
         layoutReadyRef.current = true;
         setLayoutReady(true);
-        if (msg.wasReset) {
+        if (msg.wasReset && !os.roomsMode) {
           setLayoutWasReset(true);
         }
-        if (os.characters.size > 0) {
+        if (os.characters.size > 0 && !os.roomsMode) {
           saveAgentSeats(os);
         }
+      } else if (msg.type === 'workspacesLoaded') {
+        const incoming = Array.isArray(msg.workspaces) ? (msg.workspaces as HerdrWorkspace[]) : [];
+        setWorkspaces(incoming);
+        setRoomsMode(true);
+        os.setWorkspaces(incoming);
+        for (const p of pendingAgents) {
+          os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.directoryName);
+          if (p.isHeadless) os.setHeadless(p.id, true);
+        }
+        pendingAgents = [];
+        layoutReadyRef.current = true;
+        setLayoutReady(true);
+      } else if (msg.type === 'agentOmoInfo') {
+        const id = msg.id as number;
+        const info: AgentOmoState = {
+          workspaceId: msg.workspaceId as string,
+          paneId: msg.paneId as string,
+          sessionName: msg.sessionName as string | undefined,
+          activity: msg.activity as string | undefined,
+          lifecycle: msg.lifecycle as OmoLifecycle,
+          waitingOn: (msg.waitingOn as OmoWaitingOn) ?? { children: 0, background: 0, human: 0 },
+          herdrStatus: msg.herdrStatus as string | undefined,
+        };
+        markSeenActivity(id);
+        setAgentOmoInfos((prev) => ({ ...prev, [id]: info }));
+        const isNeedsYou = info.lifecycle === 'waiting_human' || info.herdrStatus === 'blocked';
+        setAgentAwaitingInput((prev) => {
+          if ((prev[id] ?? false) === isNeedsYou) return prev;
+          return { ...prev, [id]: isNeedsYou };
+        });
+        os.setAgentOmoInfo(id, info);
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number;
         const directoryName = msg.directoryName as string | undefined;
@@ -400,6 +455,7 @@ export function useExtensionMessages(
         setAgentStatuses((prev) => omitKey(prev, id));
         setAgentAwaitingInput((prev) => omitKey(prev, id));
         setAgentSeenActivity((prev) => omitKey(prev, id));
+        setAgentOmoInfos((prev) => omitKey(prev, id));
         setSubagentTools((prev) => omitKey(prev, id));
         // Remove all sub-agent characters belonging to this agent
         delete backgroundParentToolIdsRef.current[id];
@@ -559,20 +615,37 @@ export function useExtensionMessages(
       } else if (msg.type === 'agentStatus') {
         const id = msg.id as number;
         const status = msg.status as string;
+        const ch = os.characters.get(id);
+        const omoLifecycle = ch?.omoLifecycle;
+        const isOmoStaySeated =
+          omoLifecycle === 'waiting_human' ||
+          omoLifecycle === 'paused' ||
+          omoLifecycle === 'failed' ||
+          ch?.herdrStatus === 'blocked';
         markSeenActivity(id);
         setAgentStatuses((prev) => {
           if (status === 'active') return omitKey(prev, id);
           return { ...prev, [id]: status };
         });
         setAgentAwaitingInput((prev) => {
-          const awaiting = status === 'waiting' && msg.awaitingInput === true;
+          const awaiting =
+            (status === 'waiting' && msg.awaitingInput === true) ||
+            omoLifecycle === 'waiting_human' ||
+            ch?.herdrStatus === 'blocked';
           if ((prev[id] ?? false) === awaiting) return prev;
           return { ...prev, [id]: awaiting };
         });
-        os.setAgentActive(id, status === 'active');
+        if (!isOmoStaySeated) {
+          os.setAgentActive(id, status === 'active');
+        }
         if (status === 'waiting') {
-          os.showWaitingBubble(id, msg.awaitingInput === true);
-          playDoneSound();
+          if (omoLifecycle === 'waiting_human' || ch?.herdrStatus === 'blocked') {
+            os.showPermissionBubble(id);
+            playPermissionSound();
+          } else if (omoLifecycle !== 'failed' && omoLifecycle !== 'paused') {
+            os.showWaitingBubble(id, msg.awaitingInput === true);
+            playDoneSound();
+          }
         }
       } else if (msg.type === 'agentToolPermission') {
         const id = msg.id as number;
@@ -876,6 +949,9 @@ export function useExtensionMessages(
     agentSeenActivity,
     subagentTools,
     subagentCharacters,
+    workspaces,
+    roomsMode,
+    agentOmoInfos,
     layoutReady,
     layoutWasReset,
     loadedAssets,

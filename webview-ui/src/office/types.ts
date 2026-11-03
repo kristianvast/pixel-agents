@@ -22,6 +22,8 @@ export const TileType = {
 } as const;
 export type TileType = (typeof TileType)[keyof typeof TileType];
 
+export type { HerdrWorkspace, OmoLifecycle, OmoWaitingOn } from '../../../core/src/messages.js';
+import type { OmoLifecycle, OmoWaitingOn } from '../../../core/src/messages.js';
 /** Re-export ColorValue for consumers that import color types from office/types */
 export type { ColorValue } from '../components/ui/types.js';
 import type { ColorValue } from '../components/ui/types.js';
@@ -254,6 +256,22 @@ export interface Character {
   contextTokens: number;
   /** Window `contextTokens` is measured against. */
   maxContextTokens: number;
+
+  // -- Omo + Herdr --
+  /** Herdr workspace ID this agent belongs to. */
+  workspaceId?: string;
+  /** Herdr pane ID this agent runs in. */
+  paneId?: string;
+  /** Omo session title (`session_info.name`). */
+  sessionName?: string;
+  /** Latest omo activity summary when running without an active tool. */
+  omoActivity?: string;
+  /** Latest omo session lifecycle state. */
+  omoLifecycle?: OmoLifecycle;
+  /** Counts of children/background/human blockers for waiting states. */
+  omoWaitingOn?: OmoWaitingOn;
+  /** Herdr pane agent_status (`idle | working | blocked | done | unknown`). */
+  herdrStatus?: string;
 }
 
 export const PetState = { IDLE: 'idle', WALK: 'walk', FOLLOW: 'follow' } as const;

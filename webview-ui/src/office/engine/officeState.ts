@@ -25,12 +25,20 @@ import {
   layoutToTileMap,
 } from '../layout/layoutSerializer.js';
 import { findPath, getWalkableTiles, isWalkable } from '../layout/tileMap.js';
+import type { WorkspaceRoomBounds } from '../layout/workspaceRooms.js';
+import {
+  buildWorkspaceRoomsLayout,
+  computeWorkspaceRoomsSignature,
+} from '../layout/workspaceRooms.js';
 import { getPetCount, getPetName } from '../sprites/petSpriteData.js';
 import { getLoadedCharacterCount } from '../sprites/spriteData.js';
 import type {
   Character,
   FurnitureInstance,
+  HerdrWorkspace,
   OfficeLayout,
+  OmoLifecycle,
+  OmoWaitingOn,
   Pet,
   PlacedFurniture,
   PlacedPet,
@@ -94,6 +102,22 @@ export class OfficeState {
    * `findFreeSeat()` to bias new agents toward seats inside their Directory's Area.
    */
   areaMappings: Record<string, string[]> = {};
+  workspaces: HerdrWorkspace[] = [];
+  workspaceRooms: WorkspaceRoomBounds[] = [];
+  roomsMode = false;
+  private workspaceRoomsSignature = '';
+  private pendingOmoInfo: Map<
+    number,
+    {
+      workspaceId: string;
+      paneId: string;
+      sessionName?: string;
+      activity?: string;
+      lifecycle: OmoLifecycle;
+      waitingOn: OmoWaitingOn;
+      herdrStatus?: string;
+    }
+  > = new Map();
 
   /**
    * The first-run consent greeter, deliberately NOT in `characters`.
@@ -176,7 +200,9 @@ export class OfficeState {
     for (const ch of this.characters.values()) {
       if (ch.seatId && this.seats.has(ch.seatId)) {
         const seat = this.seats.get(ch.seatId)!;
-        if (!seat.assigned) {
+        const zone = this.seatZone(ch.seatId);
+        const matchesRoom = !ch.workspaceId || zone === ch.workspaceId;
+        if (!seat.assigned && matchesRoom) {
           seat.assigned = true;
           // Snap character to seat position
           ch.tileCol = seat.seatCol;
@@ -195,7 +221,7 @@ export class OfficeState {
     // Second pass: assign remaining characters to free seats
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue;
-      const seatId = this.findFreeSeat(ch.directoryName);
+      const seatId = this.findFreeSeat(ch.directoryName, ch.workspaceId);
       if (seatId) {
         this.seats.get(seatId)!.assigned = true;
         ch.seatId = seatId;
@@ -211,11 +237,16 @@ export class OfficeState {
     // Relocate any characters that ended up outside bounds or on non-walkable tiles
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue; // seated characters are fine
+      const tileArea =
+        ch.tileRow >= 0 && ch.tileRow < layout.rows && ch.tileCol >= 0 && ch.tileCol < layout.cols
+          ? (layout.areaTiles?.[ch.tileRow * layout.cols + ch.tileCol] ?? null)
+          : null;
       if (
         ch.tileCol < 0 ||
         ch.tileCol >= layout.cols ||
         ch.tileRow < 0 ||
-        ch.tileRow >= layout.rows
+        ch.tileRow >= layout.rows ||
+        (ch.workspaceId && tileArea !== ch.workspaceId)
       ) {
         this.relocateCharacterToWalkable(ch);
       }
@@ -252,14 +283,58 @@ export class OfficeState {
 
   /** Move a character to a random walkable tile */
   private relocateCharacterToWalkable(ch: Character): void {
-    if (this.walkableTiles.length === 0) return;
-    const spawn = this.walkableTiles[Math.floor(Math.random() * this.walkableTiles.length)];
+    const candidates = this.walkableTilesForCharacter(ch);
+    if (candidates.length === 0) return;
+    const spawn = candidates[Math.floor(Math.random() * candidates.length)];
     ch.tileCol = spawn.col;
     ch.tileRow = spawn.row;
     ch.x = spawn.col * TILE_SIZE + TILE_SIZE / 2;
     ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2;
     ch.path = [];
     ch.moveProgress = 0;
+  }
+
+  private walkableTilesForCharacter(ch: Character): Array<{ col: number; row: number }> {
+    const wsId =
+      ch.workspaceId ??
+      (ch.parentAgentId ? this.characters.get(ch.parentAgentId)?.workspaceId : undefined);
+    if (!wsId || !this.layout.areaTiles) return this.walkableTiles;
+    const areaTiles = this.layout.areaTiles;
+    const cols = this.layout.cols;
+    const filtered = this.walkableTiles.filter((t) => areaTiles[t.row * cols + t.col] === wsId);
+    return filtered.length > 0 ? filtered : this.walkableTiles;
+  }
+
+  /** Per-workspace blocked set = furniture blocks + every tile outside that room,
+   *  so paths of a room's characters never leave the room. Keyed on the layout
+   *  object so a rebuilt layout invalidates it. */
+  private roomBlockedCache: { layout: OfficeLayout | null; sets: Map<string, Set<string>> } = {
+    layout: null,
+    sets: new Map(),
+  };
+
+  private blockedTilesForCharacter(ch: Character): Set<string> {
+    const wsId =
+      ch.workspaceId ??
+      (ch.parentAgentId ? this.characters.get(ch.parentAgentId)?.workspaceId : undefined);
+    const areaTiles = this.layout.areaTiles;
+    if (!wsId || !areaTiles) return this.blockedTiles;
+    const cols = this.layout.cols;
+    // A character standing outside its room (e.g. before its workspace was known)
+    // must still be able to path back in.
+    if (areaTiles[ch.tileRow * cols + ch.tileCol] !== wsId) return this.blockedTiles;
+    if (this.roomBlockedCache.layout !== this.layout) {
+      this.roomBlockedCache = { layout: this.layout, sets: new Map() };
+    }
+    let set = this.roomBlockedCache.sets.get(wsId);
+    if (!set) {
+      set = new Set(this.blockedTiles);
+      for (let i = 0; i < areaTiles.length; i++) {
+        if (areaTiles[i] !== wsId) set.add(`${i % cols},${Math.floor(i / cols)}`);
+      }
+      this.roomBlockedCache.sets.set(wsId, set);
+    }
+    return set;
   }
 
   getLayout(): OfficeLayout {
@@ -275,11 +350,15 @@ export class OfficeState {
   }
 
   /** Temporarily unblock a character's own seat, run fn, then re-block */
-  private withOwnSeatUnblocked<T>(ch: Character, fn: () => T): T {
+  private withOwnSeatUnblocked<T>(
+    ch: Character,
+    fn: () => T,
+    blocked: Set<string> = this.blockedTiles,
+  ): T {
     const key = this.ownSeatKey(ch);
-    if (key) this.blockedTiles.delete(key);
+    if (key) blocked.delete(key);
     const result = fn();
-    if (key) this.blockedTiles.add(key);
+    if (key) blocked.add(key);
     return result;
   }
 
@@ -341,7 +420,11 @@ export class OfficeState {
    * Random-pick a seat from a candidate list, biased toward seats that face an
    * electronics tile. Returns null when the candidate list is empty.
    */
-  private pickFromSeats(seatUids: string[], electronicsTiles: Set<string>): string | null {
+  private pickFromSeats(
+    seatUids: string[],
+    electronicsTiles: Set<string>,
+    deterministic = false,
+  ): string | null {
     if (seatUids.length === 0) return null;
     const pcSeats: string[] = [];
     const otherSeats: string[] = [];
@@ -354,8 +437,14 @@ export class OfficeState {
         otherSeats.push(uid);
       }
     }
-    if (pcSeats.length > 0) return pcSeats[Math.floor(Math.random() * pcSeats.length)];
-    if (otherSeats.length > 0) return otherSeats[Math.floor(Math.random() * otherSeats.length)];
+    if (pcSeats.length > 0) {
+      return deterministic ? pcSeats[0] : pcSeats[Math.floor(Math.random() * pcSeats.length)];
+    }
+    if (otherSeats.length > 0) {
+      return deterministic
+        ? otherSeats[0]
+        : otherSeats[Math.floor(Math.random() * otherSeats.length)];
+    }
     return null;
   }
 
@@ -373,13 +462,19 @@ export class OfficeState {
    * preserves pre-Areas single-stage behavior (skips Stage 1; Stage 2 picks
    * unzoned seats from a layout without `areaTiles`, which is every seat).
    */
-  private findFreeSeat(directoryName?: string): string | null {
+  private findFreeSeat(directoryName?: string, workspaceId?: string): string | null {
     const electronicsTiles = this.buildElectronicsTileSet();
     const freeSeats: string[] = [];
     for (const [uid, seat] of this.seats) {
       if (!seat.assigned) freeSeats.push(uid);
     }
     if (freeSeats.length === 0) return null;
+
+    if (workspaceId) {
+      const inRoom = freeSeats.filter((uid) => this.seatZone(uid) === workspaceId);
+      const roomPick = this.pickFromSeats(inRoom, electronicsTiles, true);
+      if (roomPick) return roomPick;
+    }
 
     const areaLabels = directoryName ? this.areaMappings[directoryName] : undefined;
 
@@ -404,14 +499,25 @@ export class OfficeState {
   }
 
   /** Closest walkable tile to (col,row) not occupied by another character, or null. */
-  private closestFreeWalkableTile(col: number, row: number): { col: number; row: number } | null {
+  private closestFreeWalkableTile(
+    col: number,
+    row: number,
+    workspaceId?: string,
+  ): { col: number; row: number } | null {
     const occupied = new Set<string>();
     for (const ch of this.characters.values()) {
       occupied.add(`${ch.tileCol},${ch.tileRow}`);
     }
+    const areaTiles = this.layout.areaTiles;
+    const cols = this.layout.cols;
+    const pool =
+      workspaceId && areaTiles
+        ? this.walkableTiles.filter((t) => areaTiles[t.row * cols + t.col] === workspaceId)
+        : this.walkableTiles;
+    const tiles = pool.length > 0 ? pool : this.walkableTiles;
     let best: { col: number; row: number } | null = null;
     let bestDist = Infinity;
-    for (const tile of this.walkableTiles) {
+    for (const tile of tiles) {
       if (occupied.has(`${tile.col},${tile.row}`)) continue;
       const d = Math.abs(tile.col - col) + Math.abs(tile.row - row);
       if (d < bestDist) {
@@ -476,8 +582,10 @@ export class OfficeState {
     if (!seatId && anchorAt) {
       seatId = closestFreeSeat(this.seats, anchorAt.col, anchorAt.row);
     }
+    const pendingOmo = this.pendingOmoInfo.get(id);
+    const workspaceId = pendingOmo?.workspaceId;
     if (!seatId) {
-      seatId = this.findFreeSeat(directoryName);
+      seatId = this.findFreeSeat(directoryName, workspaceId);
     }
 
     let ch: Character;
@@ -487,7 +595,9 @@ export class OfficeState {
       ch = createCharacter(id, palette, seatId, seat, hueShift);
     } else {
       // No seats — teammates spawn beside their anchor, others at a random walkable tile
-      let spawn = anchorAt ? this.closestFreeWalkableTile(anchorAt.col, anchorAt.row) : null;
+      let spawn = anchorAt
+        ? this.closestFreeWalkableTile(anchorAt.col, anchorAt.row, workspaceId)
+        : null;
       if (!spawn) {
         spawn =
           this.walkableTiles.length > 0
@@ -508,6 +618,10 @@ export class OfficeState {
       startMatrixEffect(ch, 'spawn');
     }
     this.characters.set(id, ch);
+    if (pendingOmo) {
+      this.pendingOmoInfo.delete(id);
+      this.setAgentOmoInfo(id, pendingOmo);
+    }
   }
 
   // ── Greeter ───────────────────────────────────────────────────
@@ -587,6 +701,7 @@ export class OfficeState {
   }
 
   removeAgent(id: number): void {
+    this.pendingOmoInfo.delete(id);
     const ch = this.characters.get(id);
     if (!ch) return;
     if (ch.matrixEffect === 'despawn') return; // already despawning
@@ -600,6 +715,9 @@ export class OfficeState {
     // Start despawn animation instead of immediate delete
     startMatrixEffect(ch, 'despawn');
     ch.bubbleType = null;
+    if (this.roomsMode) {
+      this.syncWorkspaceRoomsLayout();
+    }
   }
 
   /** Find seat uid at a given tile position, or null */
@@ -735,9 +853,11 @@ export class OfficeState {
     // Find the closest walkable tile to the parent, avoiding tiles occupied by other characters
     const parentCol = parentCh ? parentCh.tileCol : 0;
     const parentRow = parentCh ? parentCh.tileRow : 0;
+    const parentWsId = parentCh?.workspaceId;
     let spawn = { col: parentCol, row: parentRow };
     if (this.walkableTiles.length > 0) {
-      spawn = this.closestFreeWalkableTile(parentCol, parentRow) ?? this.walkableTiles[0];
+      spawn =
+        this.closestFreeWalkableTile(parentCol, parentRow, parentWsId) ?? this.walkableTiles[0];
     }
 
     const ch = createCharacter(id, palette, null, null, hueShift);
@@ -749,6 +869,7 @@ export class OfficeState {
     if (parentCh) ch.dir = parentCh.dir;
     ch.isSubagent = true;
     ch.parentAgentId = parentAgentId;
+    if (parentWsId) ch.workspaceId = parentWsId;
     startMatrixEffect(ch, 'spawn');
     this.characters.set(id, ch);
 
@@ -1122,6 +1243,139 @@ export class OfficeState {
     ch.maxContextTokens = maxContextTokens;
   }
 
+  setWorkspaces(workspaces: HerdrWorkspace[]): boolean {
+    this.workspaces = workspaces.map((w) => ({ ...w }));
+    this.roomsMode = true;
+    return this.syncWorkspaceRoomsLayout();
+  }
+
+  setAgentOmoInfo(
+    id: number,
+    info: {
+      workspaceId: string;
+      paneId: string;
+      sessionName?: string;
+      activity?: string;
+      lifecycle: OmoLifecycle;
+      waitingOn: OmoWaitingOn;
+      herdrStatus?: string;
+    },
+  ): boolean {
+    const ch = this.characters.get(id);
+    if (!ch) {
+      this.pendingOmoInfo.set(id, {
+        ...info,
+        waitingOn: { ...info.waitingOn },
+      });
+      return false;
+    }
+
+    const prevWorkspaceId = ch.workspaceId;
+    ch.workspaceId = info.workspaceId;
+    ch.paneId = info.paneId;
+    ch.sessionName = info.sessionName;
+    ch.omoActivity = info.activity;
+    ch.omoLifecycle = info.lifecycle;
+    ch.omoWaitingOn = { ...info.waitingOn };
+    ch.herdrStatus = info.herdrStatus;
+
+    let rebuilt = false;
+    if (this.roomsMode) {
+      rebuilt = this.syncWorkspaceRoomsLayout();
+      if (!rebuilt && prevWorkspaceId !== info.workspaceId) {
+        this.ensureAgentSeatedInWorkspaceRoom(ch);
+      }
+    }
+
+    const isActiveLifecycle =
+      info.lifecycle === 'running' ||
+      info.lifecycle === 'waiting_children' ||
+      info.lifecycle === 'waiting_background';
+    const isNeedsYou = info.lifecycle === 'waiting_human' || info.herdrStatus === 'blocked';
+    const isStaySeatedLifecycle =
+      isNeedsYou || info.lifecycle === 'paused' || info.lifecycle === 'failed';
+
+    if (isActiveLifecycle) {
+      this.setAgentActive(id, true);
+    } else if (isStaySeatedLifecycle) {
+      ch.isActive = false;
+      ch.seatTimer = 1_000_000;
+      if (ch.seatId) {
+        const seat = this.seats.get(ch.seatId);
+        if (seat && ch.tileCol === seat.seatCol && ch.tileRow === seat.seatRow) {
+          ch.state = CharacterState.TYPE;
+          ch.dir = seat.facingDir;
+        }
+      }
+      this.rebuildFurnitureInstances();
+    } else if (info.lifecycle === 'done' || info.lifecycle === 'idle') {
+      this.setAgentActive(id, false);
+    }
+
+    if (isNeedsYou) {
+      this.showPermissionBubble(id);
+    } else if (ch.bubbleType === 'permission') {
+      this.clearPermissionBubble(id);
+    } else if (isStaySeatedLifecycle && ch.bubbleType === 'waiting') {
+      ch.bubbleType = null;
+      ch.bubbleTimer = 0;
+    }
+
+    return rebuilt;
+  }
+
+  private ensureAgentSeatedInWorkspaceRoom(ch: Character): void {
+    if (!ch.workspaceId) return;
+    const currentZone = ch.seatId ? this.seatZone(ch.seatId) : null;
+    if (currentZone === ch.workspaceId) return;
+    if (ch.seatId) {
+      const oldSeat = this.seats.get(ch.seatId);
+      if (oldSeat) oldSeat.assigned = false;
+      ch.seatId = null;
+    }
+    const newSeatId = this.findFreeSeat(ch.directoryName, ch.workspaceId);
+    if (newSeatId) {
+      const seat = this.seats.get(newSeatId)!;
+      seat.assigned = true;
+      ch.seatId = newSeatId;
+      ch.tileCol = seat.seatCol;
+      ch.tileRow = seat.seatRow;
+      ch.x = seat.seatCol * TILE_SIZE + TILE_SIZE / 2;
+      ch.y = seat.seatRow * TILE_SIZE + TILE_SIZE / 2;
+      ch.dir = seat.facingDir;
+      ch.path = [];
+      ch.moveProgress = 0;
+    }
+  }
+
+  private syncWorkspaceRoomsLayout(): boolean {
+    if (!this.roomsMode || this.workspaces.length === 0) return false;
+    const counts: Record<string, number> = {};
+    for (const ch of this.characters.values()) {
+      if (ch.isSubagent || ch.matrixEffect === 'despawn') continue;
+      if (ch.workspaceId) {
+        counts[ch.workspaceId] = (counts[ch.workspaceId] ?? 0) + 1;
+      }
+    }
+    const sig = computeWorkspaceRoomsSignature(this.workspaces, counts);
+    if (sig === this.workspaceRoomsSignature) {
+      const focusById = new Map(this.workspaces.map((w) => [w.id, w]));
+      for (const room of this.workspaceRooms) {
+        const ws = focusById.get(room.workspaceId);
+        if (ws) {
+          room.focused = ws.focused;
+          room.label = ws.label;
+        }
+      }
+      return false;
+    }
+    this.workspaceRoomsSignature = sig;
+    const { layout, rooms } = buildWorkspaceRoomsLayout(this.workspaces, counts);
+    this.workspaceRooms = rooms;
+    this.rebuildFromLayout(layout);
+    return true;
+  }
+
   update(dt: number): void {
     // Furniture animation cycling
     const prevFrame = Math.floor(this.furnitureAnimTimer / FURNITURE_ANIM_INTERVAL_SEC);
@@ -1146,8 +1400,12 @@ export class OfficeState {
       }
 
       // Temporarily unblock own seat so character can pathfind to it
-      this.withOwnSeatUnblocked(ch, () =>
-        updateCharacter(ch, dt, this.walkableTiles, this.seats, this.tileMap, this.blockedTiles),
+      const walkable = this.walkableTilesForCharacter(ch);
+      const blocked = this.blockedTilesForCharacter(ch);
+      this.withOwnSeatUnblocked(
+        ch,
+        () => updateCharacter(ch, dt, walkable, this.seats, this.tileMap, blocked),
+        blocked,
       );
 
       // Tick bubble timer for waiting bubbles

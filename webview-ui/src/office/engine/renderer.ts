@@ -32,6 +32,20 @@ import {
   HEADLESS_CHARACTER_ALPHA,
   HOVERED_OUTLINE_ALPHA,
   OUTLINE_Z_SORT_OFFSET,
+  ROOM_NAMEPLATE_BG_COLOR,
+  ROOM_NAMEPLATE_BORDER_COLOR,
+  ROOM_NAMEPLATE_BORDER_PX,
+  ROOM_NAMEPLATE_FOCUSED_BG_COLOR,
+  ROOM_NAMEPLATE_FOCUSED_BORDER_COLOR,
+  ROOM_NAMEPLATE_FOCUSED_TEXT_COLOR,
+  ROOM_NAMEPLATE_FONT_SIZE_PX,
+  ROOM_NAMEPLATE_MIN_FONT_SIZE_PX,
+  ROOM_NAMEPLATE_OFFSET_TILES,
+  ROOM_NAMEPLATE_PAD_X_PX,
+  ROOM_NAMEPLATE_PAD_Y_PX,
+  ROOM_NAMEPLATE_SHADOW_COLOR,
+  ROOM_NAMEPLATE_SHADOW_OFFSET_PX,
+  ROOM_NAMEPLATE_TEXT_COLOR,
   ROTATE_BUTTON_BG,
   SEAT_AVAILABLE_COLOR,
   SEAT_BUSY_COLOR,
@@ -43,6 +57,7 @@ import {
   VOID_TILE_OUTLINE_COLOR,
 } from '../../constants.js';
 import { getColorizedFloorSprite, hasFloorSprites, WALL_COLOR } from '../floorTiles.js';
+import type { WorkspaceRoomBounds } from '../layout/workspaceRooms.js';
 import { mapOffset } from '../projection.js';
 import {
   getCarpetJunctionSprite,
@@ -285,6 +300,58 @@ export function renderAreaLabels(
     ctx.fillStyle = colorMap.get(label) ?? AREA_LABEL_FALLBACK_COLOR;
     ctx.fillText(label, cx, cy);
   }
+  ctx.restore();
+}
+
+export function renderRoomNameplates(
+  ctx: CanvasRenderingContext2D,
+  rooms: readonly WorkspaceRoomBounds[] | undefined,
+  offsetX: number,
+  offsetY: number,
+  zoom: number,
+): void {
+  if (!rooms || rooms.length === 0) return;
+
+  const s = TILE_SIZE * zoom;
+  const fontSize = Math.max(ROOM_NAMEPLATE_FONT_SIZE_PX * zoom, ROOM_NAMEPLATE_MIN_FONT_SIZE_PX);
+  const padX = Math.max(ROOM_NAMEPLATE_PAD_X_PX * zoom, 8);
+  const padY = Math.max(ROOM_NAMEPLATE_PAD_Y_PX * zoom, 4);
+  const border = ROOM_NAMEPLATE_BORDER_PX;
+  const shadow = ROOM_NAMEPLATE_SHADOW_OFFSET_PX;
+
+  ctx.save();
+  ctx.font = `bold ${fontSize}px 'FS Pixel Sans'`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (const room of rooms) {
+    const cx = Math.round(offsetX + (room.col + room.width / 2) * s);
+    const cy = Math.round(offsetY + (room.row - ROOM_NAMEPLATE_OFFSET_TILES) * s);
+    const textWidth = Math.ceil(ctx.measureText(room.label).width);
+    const boxW = textWidth + padX * 2;
+    const boxH = fontSize + padY * 2;
+    const boxX = Math.round(cx - boxW / 2);
+    const boxY = Math.round(cy - boxH / 2);
+
+    ctx.fillStyle = ROOM_NAMEPLATE_SHADOW_COLOR;
+    ctx.fillRect(boxX + shadow, boxY + shadow, boxW, boxH);
+
+    ctx.fillStyle = room.focused ? ROOM_NAMEPLATE_FOCUSED_BG_COLOR : ROOM_NAMEPLATE_BG_COLOR;
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+
+    ctx.strokeStyle = room.focused
+      ? ROOM_NAMEPLATE_FOCUSED_BORDER_COLOR
+      : ROOM_NAMEPLATE_BORDER_COLOR;
+    ctx.lineWidth = border;
+    ctx.strokeRect(boxX + border / 2, boxY + border / 2, boxW - border, boxH - border);
+
+    ctx.fillStyle = ROOM_NAMEPLATE_SHADOW_COLOR;
+    ctx.fillText(room.label, cx + 1, cy + 1);
+
+    ctx.fillStyle = room.focused ? ROOM_NAMEPLATE_FOCUSED_TEXT_COLOR : ROOM_NAMEPLATE_TEXT_COLOR;
+    ctx.fillText(room.label, cx, cy);
+  }
+
   ctx.restore();
 }
 
@@ -870,6 +937,7 @@ export function renderFrame(
   showAreas?: boolean,
   activeAreaLabel?: string | null,
   pets?: Pet[],
+  workspaceRooms?: readonly WorkspaceRoomBounds[],
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -937,6 +1005,10 @@ export function renderFrame(
   // Area labels (above bubbles + characters, below editor overlays)
   if (showAreas) {
     renderAreaLabels(ctx, areaTiles, areas, cols, rows, offsetX, offsetY, zoom);
+  }
+
+  if (workspaceRooms && workspaceRooms.length > 0) {
+    renderRoomNameplates(ctx, workspaceRooms, offsetX, offsetY, zoom);
   }
 
   // Editor overlays

@@ -20,6 +20,8 @@ interface BottomToolbarProps {
   terminalAvailable: boolean;
   /** Why the terminal is off (shown on the disabled button's tooltip). */
   terminalUnavailableReason: string | null;
+  /** Hide the Layout button while workspace rooms mode owns the layout. */
+  hideLayoutButton?: boolean;
 }
 
 export function BottomToolbar({
@@ -32,6 +34,7 @@ export function BottomToolbar({
   onEditDirectory,
   terminalAvailable,
   terminalUnavailableReason,
+  hideLayoutButton = false,
 }: BottomToolbarProps) {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const launchRef = useRef<HTMLDivElement>(null);
@@ -111,13 +114,15 @@ export function BottomToolbar({
           />
         </div>
       )}
-      <Button
-        variant={isEditMode ? 'active' : 'default'}
-        onClick={onToggleEditMode}
-        title="Edit office layout"
-      >
-        Layout
-      </Button>
+      {!hideLayoutButton && (
+        <Button
+          variant={isEditMode ? 'active' : 'default'}
+          onClick={onToggleEditMode}
+          title="Edit office layout"
+        >
+          Layout
+        </Button>
+      )}
       <Button
         variant={isSettingsOpen ? 'active' : 'default'}
         onClick={onToggleSettings}

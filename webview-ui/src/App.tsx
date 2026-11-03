@@ -88,6 +88,8 @@ function App() {
     agentSeenActivity,
     subagentTools,
     subagentCharacters,
+    roomsMode,
+    agentOmoInfos,
     layoutReady,
     layoutWasReset,
     loadedAssets,
@@ -572,6 +574,7 @@ function App() {
             officeState={officeState}
             agents={agents}
             agentTools={agentTools}
+            agentOmoInfos={agentOmoInfos}
             subagentTools={subagentTools}
             subagentCharacters={subagentCharacters}
             containerRef={containerRef}
@@ -641,6 +644,7 @@ function App() {
           onEditDirectory={directoryEditor.edit}
           terminalAvailable={terminalAvailable}
           terminalUnavailableReason={terminalUnavailableReason}
+          hideLayoutButton={roomsMode}
         />
       )}
 

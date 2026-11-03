@@ -150,6 +150,77 @@ export const AREA_LABEL_SHADOW_COLOR = '#000000';
 /** Drop-shadow alpha behind area labels. */
 export const AREA_LABEL_SHADOW_ALPHA = 0.6;
 
+// ── Workspace Rooms (omo + herdr mode) ──────────────────────
+/** Minimum desk seats generated in every workspace room. */
+export const WORKSPACE_ROOM_MIN_SEATS = 4;
+/** Target aspect ratio (width / height) when packing workspace rooms onto a grid. */
+export const WORKSPACE_OFFICE_TARGET_ASPECT = 1.6;
+/** Margin in VOID tiles at the top of the generated office so room nameplates fit. */
+export const WORKSPACE_ROOM_TOP_MARGIN_TILES = 2;
+/** Vertical corridor gap in tiles between stacked rows of workspace rooms. */
+export const WORKSPACE_ROOM_ROW_GAP_TILES = 3;
+/** Interior width in floor tiles for a standard workspace room. */
+export const WORKSPACE_ROOM_INNER_COLS = 11;
+/** Base interior height in floor tiles for a 4-seat workspace room. */
+export const WORKSPACE_ROOM_BASE_INNER_ROWS = 8;
+/** Extra interior rows added per additional pair of desk seats beyond 4. */
+export const WORKSPACE_ROOM_EXTRA_ROWS_PER_PAIR = 3;
+/** Wall color for generated workspace rooms (matches bundled default layout walls). */
+export const WORKSPACE_ROOM_WALL_COLOR: ColorValue = { h: 214, s: 30, b: -100, c: -55 };
+/** Corridor floor color between workspace room rows. */
+export const WORKSPACE_CORRIDOR_FLOOR_COLOR: ColorValue = { h: 210, s: 18, b: -38, c: -60 };
+/** Rotating floor palettes (tile pattern + HSBC color) per workspace room. */
+export const WORKSPACE_ROOM_FLOOR_PALETTES: ReadonlyArray<{
+  tile: number;
+  color: ColorValue;
+}> = [
+  { tile: 7, color: { h: 25, s: 48, b: -43, c: -88 } },
+  { tile: 1, color: { h: 209, s: 39, b: -25, c: -80 } },
+  { tile: 2, color: { h: 145, s: 35, b: -35, c: -75 } },
+  { tile: 4, color: { h: 280, s: 32, b: -30, c: -75 } },
+  { tile: 7, color: { h: 42, s: 45, b: -35, c: -80 } },
+  { tile: 1, color: { h: 340, s: 35, b: -30, c: -75 } },
+] as const;
+/** Room nameplate font size (pre-zoom world px). */
+export const ROOM_NAMEPLATE_FONT_SIZE_PX = 8;
+/** Minimum on-screen font size for room nameplates. */
+export const ROOM_NAMEPLATE_MIN_FONT_SIZE_PX = 14;
+/** Horizontal padding inside a room nameplate box (pre-zoom world px). */
+export const ROOM_NAMEPLATE_PAD_X_PX = 6;
+/** Vertical padding inside a room nameplate box (pre-zoom world px). */
+export const ROOM_NAMEPLATE_PAD_Y_PX = 3;
+/** Border thickness of a room nameplate box in device pixels. */
+export const ROOM_NAMEPLATE_BORDER_PX = 2;
+/** Hard shadow offset of a room nameplate box in device pixels. */
+export const ROOM_NAMEPLATE_SHADOW_OFFSET_PX = 2;
+/** Vertical offset above the room's top wall row where the nameplate is centered (tiles). */
+export const ROOM_NAMEPLATE_OFFSET_TILES = 1.25;
+export const ROOM_NAMEPLATE_BG_COLOR = '#1e1e2e';
+export const ROOM_NAMEPLATE_FOCUSED_BG_COLOR = '#2c2b6d';
+export const ROOM_NAMEPLATE_BORDER_COLOR = '#4a4a6a';
+export const ROOM_NAMEPLATE_FOCUSED_BORDER_COLOR = '#746fff';
+export const ROOM_NAMEPLATE_TEXT_COLOR = 'rgba(255, 255, 255, 0.9)';
+export const ROOM_NAMEPLATE_FOCUSED_TEXT_COLOR = '#ffffff';
+export const ROOM_NAMEPLATE_SHADOW_COLOR = '#0a0a14';
+
+// ── Omo Agent Badges & Bubbles ──────────────────────────────
+export const OMO_NEEDS_YOU_TEXT = 'Needs you';
+export const OMO_WAITING_BACKGROUND_TEXT = 'Waiting on background';
+export const OMO_PAUSED_TEXT = 'Paused';
+export const OMO_FAILED_TEXT = 'Failed';
+export const OMO_BADGE_WAITING_COLOR = '#4ad9d9';
+export const OMO_BADGE_WAITING_BG = 'rgba(74, 217, 217, 0.16)';
+export const OMO_BADGE_NEEDS_YOU_COLOR = '#ffd700';
+export const OMO_BADGE_NEEDS_YOU_BG = 'rgba(204, 167, 0, 0.22)';
+export const OMO_BADGE_PAUSED_COLOR = 'rgba(255, 255, 255, 0.75)';
+export const OMO_BADGE_PAUSED_BG = 'rgba(255, 255, 255, 0.12)';
+export const OMO_BADGE_FAILED_COLOR = '#ff6b72';
+export const OMO_BADGE_FAILED_BG = 'rgba(209, 66, 73, 0.28)';
+export const OMO_SESSION_NAME_COLOR = '#a29bff';
+export const TOOL_OVERLAY_OMO_LIFT_PX = 48;
+export const TOOL_OVERLAY_BASE_LIFT_PX = 28;
+export const TOOL_OVERLAY_EXTRA_LIFT_PX = 34;
+
 // ── VisualColorPicker (HSV wheel + brightness for carpets) ───
 export const VISUAL_COLOR_PICKER_SV_SIZE_PX = 180;
 export const VISUAL_COLOR_PICKER_HUE_WIDTH_PX = 20;

@@ -281,8 +281,142 @@ export function dispatchMockMessages(): void {
     type: 'settingsLoaded',
     soundEnabled: false,
     extensionVersion: '1.3.0',
-    lastSeenVersion: '1.2',
+    lastSeenVersion: '1.3',
+    alwaysShowLabels: true,
   });
+
+  dispatch({
+    type: 'providerCapabilities',
+    readingTools: ['read', 'grep', 'glob', 'web_search', 'webfetch'],
+    subagentToolNames: ['task'],
+  });
+
+  dispatch({
+    type: 'workspacesLoaded',
+    workspaces: [
+      { id: 'w1', label: '~', number: 1, focused: true },
+      { id: 'w2', label: 'barn-sim', number: 2, focused: false },
+      { id: 'w3', label: 'pecorva-website', number: 3, focused: false },
+      { id: 'w4', label: 'LIV-app', number: 4, focused: false },
+    ],
+  });
+
+  const mockAgents = [
+    {
+      id: 1,
+      workspaceId: 'w1',
+      paneId: 'w1:p1',
+      sessionName: 'Herdr Mac keybinds',
+      activity: 'Editing keymap.toml',
+      lifecycle: 'running',
+      waitingOn: { children: 0, background: 0, human: 0 },
+      herdrStatus: 'working',
+      tool: { toolId: 't-1', toolName: 'edit', status: 'Editing keymap.toml' },
+      agentStatus: 'active',
+    },
+    {
+      id: 2,
+      workspaceId: 'w1',
+      paneId: 'w1:p2',
+      sessionName: 'Dotfiles audit',
+      activity: 'Confirm shell reload?',
+      lifecycle: 'waiting_human',
+      waitingOn: { children: 0, background: 0, human: 1 },
+      herdrStatus: 'blocked',
+      agentStatus: 'waiting',
+      awaitingInput: true,
+    },
+    {
+      id: 3,
+      workspaceId: 'w2',
+      paneId: 'w2:p1',
+      sessionName: 'Barn physics solver',
+      activity: 'Delegating solver subagents',
+      lifecycle: 'waiting_children',
+      waitingOn: { children: 3, background: 0, human: 0 },
+      herdrStatus: 'working',
+      agentStatus: 'active',
+    },
+    {
+      id: 4,
+      workspaceId: 'w2',
+      paneId: 'w2:p2',
+      sessionName: 'Crop growth model',
+      activity: 'Reading soil-moisture.ts',
+      lifecycle: 'running',
+      waitingOn: { children: 0, background: 0, human: 0 },
+      herdrStatus: 'working',
+      tool: { toolId: 't-4', toolName: 'read', status: 'Reading soil-moisture.ts' },
+      agentStatus: 'active',
+    },
+    {
+      id: 5,
+      workspaceId: 'w3',
+      paneId: 'w3:p1',
+      sessionName: 'Hero landing redesign',
+      activity: 'Waiting on Vite build watch',
+      lifecycle: 'waiting_background',
+      waitingOn: { children: 0, background: 2, human: 0 },
+      herdrStatus: 'working',
+      agentStatus: 'active',
+    },
+    {
+      id: 6,
+      workspaceId: 'w3',
+      paneId: 'w3:p2',
+      sessionName: 'SEO metadata pass',
+      activity: 'Completed sitemap check',
+      lifecycle: 'done',
+      waitingOn: { children: 0, background: 0, human: 0 },
+      herdrStatus: 'done',
+      agentStatus: 'waiting',
+    },
+    {
+      id: 7,
+      workspaceId: 'w4',
+      paneId: 'w4:p1',
+      sessionName: 'Auth token refresh',
+      activity: 'Migration test failed',
+      lifecycle: 'failed',
+      waitingOn: { children: 0, background: 0, human: 0 },
+      herdrStatus: 'idle',
+      agentStatus: 'waiting',
+    },
+  ];
+
+  for (const a of mockAgents) {
+    dispatch({
+      type: 'agentCreated',
+      id: a.id,
+      directoryName: a.workspaceId,
+    });
+    dispatch({
+      type: 'agentOmoInfo',
+      id: a.id,
+      workspaceId: a.workspaceId,
+      paneId: a.paneId,
+      sessionName: a.sessionName,
+      activity: a.activity,
+      lifecycle: a.lifecycle,
+      waitingOn: a.waitingOn,
+      herdrStatus: a.herdrStatus,
+    });
+    if (a.tool) {
+      dispatch({
+        type: 'agentToolStart',
+        id: a.id,
+        toolId: a.tool.toolId,
+        toolName: a.tool.toolName,
+        status: a.tool.status,
+      });
+    }
+    dispatch({
+      type: 'agentStatus',
+      id: a.id,
+      status: a.agentStatus,
+      awaitingInput: a.awaitingInput,
+    });
+  }
 
   console.log('[BrowserMock] Messages dispatched');
 }

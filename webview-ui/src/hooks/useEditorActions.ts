@@ -141,12 +141,20 @@ export function useEditorActions(
   }, [editorState]);
 
   // Debounced layout save
-  const saveLayout = useCallback((layout: OfficeLayout) => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      transport.send({ type: 'saveLayout', layout: layout as unknown as Record<string, unknown> });
-    }, LAYOUT_SAVE_DEBOUNCE_MS);
-  }, []);
+  const saveLayout = useCallback(
+    (layout: OfficeLayout) => {
+      if (getOfficeState().roomsMode) return;
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        if (getOfficeState().roomsMode) return;
+        transport.send({
+          type: 'saveLayout',
+          layout: layout as unknown as Record<string, unknown>,
+        });
+      }, LAYOUT_SAVE_DEBOUNCE_MS);
+    },
+    [getOfficeState],
+  );
 
   const bumpTick = useCallback(() => setEditorTick((n) => n + 1), []);
 
@@ -197,6 +205,7 @@ export function useEditorActions(
   );
 
   const handleToggleEditMode = useCallback(() => {
+    if (getOfficeState().roomsMode) return;
     setIsEditMode((prev) => {
       const next = !prev;
       editorState.isEditMode = next;
@@ -493,6 +502,7 @@ export function useEditorActions(
   }, [editorState, applyEdit]);
 
   const handleSave = useCallback(() => {
+    if (getOfficeState().roomsMode) return;
     // Flush any pending debounced save immediately
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);

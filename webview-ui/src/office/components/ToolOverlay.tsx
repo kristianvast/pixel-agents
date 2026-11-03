@@ -16,19 +16,35 @@ import {
   CONTEXT_GAUGE_HEIGHT_PX,
   CONTEXT_GAUGE_WIDTH_PX,
   CONTEXT_WARN_THRESHOLD,
+  OMO_BADGE_FAILED_BG,
+  OMO_BADGE_FAILED_COLOR,
+  OMO_BADGE_NEEDS_YOU_BG,
+  OMO_BADGE_NEEDS_YOU_COLOR,
+  OMO_BADGE_PAUSED_BG,
+  OMO_BADGE_PAUSED_COLOR,
+  OMO_BADGE_WAITING_BG,
+  OMO_BADGE_WAITING_COLOR,
+  OMO_FAILED_TEXT,
+  OMO_NEEDS_YOU_TEXT,
+  OMO_PAUSED_TEXT,
+  OMO_SESSION_NAME_COLOR,
+  OMO_WAITING_BACKGROUND_TEXT,
   OVERLAY_BUBBLE_Z_INDEX,
   OVERLAY_LABEL_SELECTED_Z_INDEX,
   OVERLAY_LABEL_Z_INDEX,
   TEAM_LEAD_COLOR,
   TEAM_ROLE_COLOR,
+  TOOL_OVERLAY_BASE_LIFT_PX,
+  TOOL_OVERLAY_EXTRA_LIFT_PX,
+  TOOL_OVERLAY_OMO_LIFT_PX,
   TOOL_OVERLAY_VERTICAL_OFFSET,
 } from '../../constants.js';
-import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js';
+import type { AgentOmoState, SubagentCharacter } from '../../hooks/useExtensionMessages.js';
 import type { OfficeState } from '../engine/officeState.js';
 import { overlayProjection } from '../projection.js';
 import { getCachedSprite } from '../sprites/spriteCache.js';
 import { BUBBLE_PERMISSION_SPRITE, BUBBLE_WAITING_SPRITE } from '../sprites/spriteData.js';
-import type { ToolActivity } from '../types.js';
+import type { Character, ToolActivity } from '../types.js';
 import { CharacterState } from '../types.js';
 
 // Both turn-end states show the green checkmark bubble. A finished turn (Stop)
@@ -41,6 +57,7 @@ interface ToolOverlayProps {
   officeState: OfficeState;
   agents: number[];
   agentTools: Record<number, ToolActivity[]>;
+  agentOmoInfos?: Record<number, AgentOmoState>;
   subagentTools: Record<number, Record<string, ToolActivity[]>>;
   subagentCharacters: SubagentCharacter[];
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -50,6 +67,58 @@ interface ToolOverlayProps {
   alwaysShowOverlay: boolean;
 }
 
+interface OmoBadgeInfo {
+  text: string;
+  color: string;
+  bg: string;
+  isNeedsYou?: boolean;
+}
+
+function getOmoBadge(ch: Character, omoInfo?: AgentOmoState): OmoBadgeInfo | null {
+  const lifecycle = omoInfo?.lifecycle ?? ch.omoLifecycle;
+  const waitingOn = omoInfo?.waitingOn ?? ch.omoWaitingOn;
+  const herdrStatus = omoInfo?.herdrStatus ?? ch.herdrStatus;
+
+  if (lifecycle === 'waiting_human' || herdrStatus === 'blocked') {
+    return {
+      text: OMO_NEEDS_YOU_TEXT,
+      color: OMO_BADGE_NEEDS_YOU_COLOR,
+      bg: OMO_BADGE_NEEDS_YOU_BG,
+      isNeedsYou: true,
+    };
+  }
+  if (lifecycle === 'waiting_children') {
+    const count = waitingOn?.children ?? 0;
+    return {
+      text: `Waiting on ${count} agents`,
+      color: OMO_BADGE_WAITING_COLOR,
+      bg: OMO_BADGE_WAITING_BG,
+    };
+  }
+  if (lifecycle === 'waiting_background') {
+    return {
+      text: OMO_WAITING_BACKGROUND_TEXT,
+      color: OMO_BADGE_WAITING_COLOR,
+      bg: OMO_BADGE_WAITING_BG,
+    };
+  }
+  if (lifecycle === 'paused') {
+    return {
+      text: OMO_PAUSED_TEXT,
+      color: OMO_BADGE_PAUSED_COLOR,
+      bg: OMO_BADGE_PAUSED_BG,
+    };
+  }
+  if (lifecycle === 'failed') {
+    return {
+      text: OMO_FAILED_TEXT,
+      color: OMO_BADGE_FAILED_COLOR,
+      bg: OMO_BADGE_FAILED_BG,
+    };
+  }
+  return null;
+}
+
 /** Derive a short human-readable activity string from tools/status */
 function getActivityText(
   agentId: number,
@@ -57,26 +126,52 @@ function getActivityText(
   isActive: boolean,
   bubbleType: 'permission' | 'waiting' | null,
   waitingAwaitingInput: boolean,
+  ch: Character,
+  omoInfo?: AgentOmoState,
 ): string {
-  if (bubbleType === 'permission') return 'Needs approval';
+  const lifecycle = omoInfo?.lifecycle ?? ch.omoLifecycle;
+  const herdrStatus = omoInfo?.herdrStatus ?? ch.herdrStatus;
+  const omoActivity = omoInfo?.activity ?? ch.omoActivity;
+  const isOmo = Boolean(lifecycle || omoInfo || ch.workspaceId);
+
+  if (lifecycle === 'waiting_human' || herdrStatus === 'blocked') {
+    return OMO_NEEDS_YOU_TEXT;
+  }
+  if (bubbleType === 'permission') {
+    return isOmo ? OMO_NEEDS_YOU_TEXT : 'Needs approval';
+  }
   // Only the idle case ("Waiting for input") gets a dedicated label. A finished
   // turn (Stop, waitingAwaitingInput=false) falls through so the checkmark alone
   // signals "done", same as the original behavior.
-  if (bubbleType === 'waiting' && waitingAwaitingInput) return WAITING_INPUT_ACTIVITY_TEXT;
+  if (bubbleType === 'waiting' && waitingAwaitingInput) {
+    return isOmo ? OMO_NEEDS_YOU_TEXT : WAITING_INPUT_ACTIVITY_TEXT;
+  }
 
   const tools = agentTools[agentId];
   if (tools && tools.length > 0) {
     // Find the latest non-done tool
     const activeTool = [...tools].reverse().find((t) => !t.done);
     if (activeTool) {
-      if (activeTool.permissionWait) return 'Needs approval';
+      if (activeTool.permissionWait) return isOmo ? OMO_NEEDS_YOU_TEXT : 'Needs approval';
       return activeTool.status;
+    }
+    if (lifecycle === 'running' && omoActivity) {
+      return omoActivity;
     }
     // All tools done but agent still active (mid-turn) — keep showing last tool status
     if (isActive) {
       const lastTool = tools[tools.length - 1];
       if (lastTool) return lastTool.status;
     }
+  }
+
+  if (lifecycle === 'running') {
+    return omoActivity || 'Thinking...';
+  }
+
+  const badge = getOmoBadge(ch, omoInfo);
+  if (badge) {
+    return badge.text;
   }
 
   return 'Idle';
@@ -114,6 +209,7 @@ export function ToolOverlay({
   officeState,
   agents,
   agentTools,
+  agentOmoInfos,
   subagentTools,
   subagentCharacters,
   containerRef,
@@ -160,6 +256,11 @@ export function ToolOverlay({
         const isSelected = selectedId === id;
         const isHovered = hoveredId === id;
         const isSub = ch.isSubagent;
+        const omoInfo = !isSub ? agentOmoInfos?.[id] : undefined;
+        const omoBadge = !isSub ? getOmoBadge(ch, omoInfo) : null;
+        const omoLifecycle = omoInfo?.lifecycle ?? ch.omoLifecycle;
+        const isOmoActiveOrBadge =
+          Boolean(omoBadge) || omoLifecycle === 'running' || officeState.roomsMode;
 
         // Speech bubble (permission dots / done checkmark) — rendered here in
         // the DOM, above the label panels (OVERLAY_BUBBLE_Z_INDEX over the label panels), for every
@@ -198,8 +299,8 @@ export function ToolOverlay({
         }
 
         // Only show the label for hovered or selected agents (unless
-        // always-show is on) — the bubble renders regardless.
-        if (!alwaysShowOverlay && !isSelected && !isHovered) {
+        // always-show is on or omo rooms mode / badge is active) — the bubble renders regardless.
+        if (!alwaysShowOverlay && !isSelected && !isHovered && !isOmoActiveOrBadge) {
           return bubbleNode && <Fragment key={id}>{bubbleNode}</Fragment>;
         }
 
@@ -214,8 +315,8 @@ export function ToolOverlay({
         // so overlay counts stay stable and hover/select can still bring the
         // panel back. When always-show is off, the early return above already
         // keeps the panel hidden for idle agents.
-        const isDone = ch.bubbleType === 'waiting' && !ch.waitingAwaitingInput;
-        if (isDone && !isSelected && !isHovered) {
+        const isDone = ch.bubbleType === 'waiting' && !ch.waitingAwaitingInput && !omoBadge;
+        if (isDone && !isSelected && !isHovered && !officeState.roomsMode) {
           return (
             <Fragment key={id}>
               {bubbleNode}
@@ -233,7 +334,7 @@ export function ToolOverlay({
         const hasWaitingBubble = ch.bubbleType === 'waiting';
         const subHasPermission = isSub && ch.bubbleType === 'permission';
         let activityText: string;
-        if (hasWaitingBubble && ch.waitingAwaitingInput) {
+        if (hasWaitingBubble && ch.waitingAwaitingInput && !omoBadge) {
           // Idle, waiting on the user -> dedicated label. A finished turn (Stop)
           // shows only the checkmark and falls through to the normal idle text.
           activityText = WAITING_INPUT_ACTIVITY_TEXT;
@@ -256,26 +357,51 @@ export function ToolOverlay({
             ch.isActive,
             ch.bubbleType,
             ch.waitingAwaitingInput ?? false,
+            ch,
+            omoInfo,
           );
         }
 
         // Determine dot color
         const tools = agentTools[id];
-        const hasPermission = subHasPermission || tools?.some((t) => t.permissionWait && !t.done);
+        const hasPermission =
+          subHasPermission ||
+          omoBadge?.isNeedsYou === true ||
+          tools?.some((t) => t.permissionWait && !t.done);
         const hasActiveTools = tools?.some((t) => !t.done);
         const isActive = ch.isActive;
         const hasWaiting = ch.bubbleType === 'waiting';
 
         let dotColor: string | null = null;
-        if (hasPermission || hasWaiting) {
+        if (omoLifecycle === 'failed') {
+          dotColor = 'var(--color-status-error)';
+        } else if (hasPermission || hasWaiting) {
           dotColor = 'var(--color-status-permission)';
-        } else if (isActive && hasActiveTools) {
+        } else if (omoBadge) {
+          dotColor = omoBadge.color;
+        } else if (isActive && (hasActiveTools || omoLifecycle === 'running')) {
           dotColor = 'var(--color-status-active)';
         }
 
-        // Team info
+        // Name label: sessionName (fallback existing team/directory label)
+        const sessionLabel = omoInfo?.sessionName ?? ch.sessionName;
         const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
-        const hasExtraLines = !!(ch.directoryName || teamRoleLabel);
+        const primaryNameLabel = sessionLabel || teamRoleLabel || ch.directoryName || null;
+        const secondaryDirLabel =
+          !officeState.roomsMode && (sessionLabel || teamRoleLabel)
+            ? ch.directoryName && ch.directoryName !== primaryNameLabel
+              ? ch.directoryName
+              : null
+            : null;
+        const showDedicatedBadgePill = Boolean(omoBadge) && activityText !== omoBadge?.text;
+        const hasExtraLines = Boolean(
+          primaryNameLabel || secondaryDirLabel || showDedicatedBadgePill,
+        );
+        const labelLiftPx = officeState.roomsMode
+          ? TOOL_OVERLAY_OMO_LIFT_PX
+          : hasExtraLines
+            ? TOOL_OVERLAY_EXTRA_LIFT_PX
+            : TOOL_OVERLAY_BASE_LIFT_PX;
 
         // Context gauge. Every agent gets one — lead, teammate, adopted,
         // headless — as soon as it has taken a turn. Sub-agents never do: they
@@ -290,7 +416,7 @@ export function ToolOverlay({
               className="absolute flex flex-col items-center -translate-x-1/2"
               style={{
                 left: screenX,
-                top: screenY - (hasExtraLines ? 34 : 28),
+                top: screenY - labelLiftPx,
                 pointerEvents: isSelected ? 'auto' : 'none',
                 opacity: alwaysShowOverlay && !isSelected && !isHovered ? (isSub ? 0.5 : 0.75) : 1,
                 zIndex: isSelected ? OVERLAY_LABEL_SELECTED_Z_INDEX : OVERLAY_LABEL_Z_INDEX,
@@ -298,7 +424,9 @@ export function ToolOverlay({
               data-testid="agent-overlay"
               data-agent-id={id}
             >
-              <div className="flex items-center border-border px-8 pt-2 pb-4 gap-5 pixel-panel whitespace-nowrap max-w-2xs">
+              <div
+                className={`flex items-center border-border px-6 pt-2 pb-3 gap-4 pixel-panel whitespace-nowrap ${officeState.roomsMode ? 'max-w-[196px]' : 'max-w-2xs'}`}
+              >
                 {dotColor && (
                   <span
                     className={`w-6 h-6 rounded-full shrink-0 ${isActive && !hasPermission && !hasWaiting ? 'pixel-pulse' : ''}`}
@@ -306,16 +434,22 @@ export function ToolOverlay({
                   />
                 )}
                 <div className="flex flex-col gap-0 overflow-hidden">
-                  {teamRoleLabel && (
+                  {primaryNameLabel && (
                     <span
                       className="overflow-hidden text-ellipsis block leading-none"
                       style={{
                         fontSize: '18px',
-                        color: ch.isTeamLead ? TEAM_LEAD_COLOR : TEAM_ROLE_COLOR,
-                        fontWeight: ch.isTeamLead ? 'bold' : undefined,
+                        color: sessionLabel
+                          ? OMO_SESSION_NAME_COLOR
+                          : ch.isTeamLead
+                            ? TEAM_LEAD_COLOR
+                            : teamRoleLabel
+                              ? TEAM_ROLE_COLOR
+                              : undefined,
+                        fontWeight: ch.isTeamLead || sessionLabel ? 'bold' : undefined,
                       }}
                     >
-                      {teamRoleLabel}
+                      {primaryNameLabel}
                     </span>
                   )}
                   <span
@@ -323,13 +457,32 @@ export function ToolOverlay({
                     style={{
                       fontSize: isSub ? '20px' : '22px',
                       fontStyle: isSub ? 'italic' : undefined,
+                      color:
+                        omoBadge && activityText === omoBadge.text ? omoBadge.color : undefined,
+                      backgroundColor:
+                        omoBadge && activityText === omoBadge.text ? omoBadge.bg : undefined,
+                      padding: omoBadge && activityText === omoBadge.text ? '1px 4px' : undefined,
                     }}
+                    data-testid={omoBadge ? 'agent-omo-badge' : undefined}
                   >
                     {activityText}
                   </span>
-                  {ch.directoryName && (
+                  {showDedicatedBadgePill && omoBadge && (
+                    <span
+                      className="text-2xs leading-none overflow-hidden text-ellipsis block"
+                      style={{
+                        color: omoBadge.color,
+                        backgroundColor: omoBadge.bg,
+                        padding: '1px 4px',
+                      }}
+                      data-testid="agent-omo-badge"
+                    >
+                      {omoBadge.text}
+                    </span>
+                  )}
+                  {secondaryDirLabel && (
                     <span className="text-2xs leading-none overflow-hidden text-ellipsis block">
-                      {ch.directoryName}
+                      {secondaryDirLabel}
                     </span>
                   )}
                 </div>
