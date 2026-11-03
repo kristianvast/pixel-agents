@@ -100,6 +100,9 @@ components:
         - $ref: '#/components/schemas/AgentTeamInfo'
         # Context window
         - $ref: '#/components/schemas/AgentContextUsage'
+        # omo + herdr
+        - $ref: '#/components/schemas/WorkspacesLoaded'
+        - $ref: '#/components/schemas/AgentOmoInfo'
         # Layout
         - $ref: '#/components/schemas/LayoutLoaded'
         # Assets
@@ -455,6 +458,93 @@ components:
           type: integer
         maxContextTokens:
           type: integer
+
+    WorkspacesLoaded:
+      description: |
+        Full list of herdr workspaces (omo source only). Sent after `webviewReady`
+        and whenever the set, order, labels or focus change. The client renders
+        one room per Workspace, in `number` order.
+      type: object
+      additionalProperties: false
+      required: [type, workspaces]
+      properties:
+        type:
+          const: workspacesLoaded
+        workspaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/HerdrWorkspace'
+
+    AgentOmoInfo:
+      description: |
+        omo-specific state for one agent (omo source only). Sent after
+        `agentCreated` and on every change of any field. Always carries the full
+        current value of every field (not a delta).
+      type: object
+      additionalProperties: false
+      required: [type, id, workspaceId, paneId, lifecycle, waitingOn]
+      properties:
+        type:
+          const: agentOmoInfo
+        id:
+          type: integer
+        workspaceId:
+          type: string
+          description: herdr workspace id (e.g. "w4"); selects the agent's room.
+        paneId:
+          type: string
+          description: herdr pane id (e.g. "w4:p3"); focus target.
+        sessionName:
+          type: string
+          description: omo session title (session_info.name), the agent's label.
+        activity:
+          type: string
+          description: >-
+            Latest omo progress summary: the `summary` / `task_summary` /
+            `description` argument of the newest tool call, else empty.
+        lifecycle:
+          $ref: '#/components/schemas/OmoLifecycle'
+        waitingOn:
+          $ref: '#/components/schemas/OmoWaitingOn'
+        herdrStatus:
+          type: string
+          description: herdr agent_status (idle, working, blocked, done, unknown).
+
+    OmoLifecycle:
+      description: |
+        omo session-lifecycle state. `idle` = no lifecycle record yet / session
+        closed between turns.
+      type: string
+      enum:
+        [running, waiting_background, waiting_children, waiting_human, done, paused, failed, idle]
+
+    OmoWaitingOn:
+      description: Counts from omo session-lifecycle `waitingOn`.
+      type: object
+      additionalProperties: false
+      required: [children, background, human]
+      properties:
+        children:
+          type: integer
+        background:
+          type: integer
+        human:
+          type: integer
+
+    HerdrWorkspace:
+      description: One herdr workspace = one room in the office.
+      type: object
+      additionalProperties: false
+      required: [id, label, number, focused]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        number:
+          type: integer
+        focused:
+          type: boolean
 
     LayoutLoaded:
       description: |

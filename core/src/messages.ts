@@ -25,6 +25,8 @@ export type ServerMessage =
   | SubagentToolPermission
   | AgentTeamInfo
   | AgentContextUsage
+  | WorkspacesLoaded
+  | AgentOmoInfo
   | LayoutLoaded
   | FurnitureAssetsLoaded
   | CharacterSpritesLoaded
@@ -199,6 +201,46 @@ export interface AgentContextUsage {
   id: number;
   contextTokens: number;
   maxContextTokens: number;
+}
+
+export interface WorkspacesLoaded {
+  type: 'workspacesLoaded';
+  workspaces: HerdrWorkspace[];
+}
+
+export interface HerdrWorkspace {
+  id: string;
+  label: string;
+  number: number;
+  focused: boolean;
+}
+
+export interface AgentOmoInfo {
+  type: 'agentOmoInfo';
+  id: number;
+  workspaceId: string;
+  paneId: string;
+  sessionName?: string;
+  activity?: string;
+  lifecycle: OmoLifecycle;
+  waitingOn: OmoWaitingOn;
+  herdrStatus?: string;
+}
+
+export type OmoLifecycle =
+  | 'running'
+  | 'waiting_background'
+  | 'waiting_children'
+  | 'waiting_human'
+  | 'done'
+  | 'paused'
+  | 'failed'
+  | 'idle';
+
+export interface OmoWaitingOn {
+  children: number;
+  background: number;
+  human: number;
 }
 
 export interface LayoutLoaded {
