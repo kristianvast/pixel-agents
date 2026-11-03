@@ -57,7 +57,7 @@ test('validates release tag, ref, repository, and monotonic version', () => {
   const manifest = {
     name: 'pixel-agents',
     version: '1.4.0',
-    repository: { url: 'https://github.com/pixel-agents-hq/pixel-agents' },
+    repository: { url: 'https://github.com/kristianvast/pixel-agents' },
   };
   assert.doesNotThrow(() =>
     validateReleaseIdentity({

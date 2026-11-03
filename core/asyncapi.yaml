@@ -23,7 +23,7 @@ info:
     name: MIT
   contact:
     name: Pixel Agents
-    url: https://github.com/pablodelucca/pixel-agents
+    url: https://github.com/kristianvast/pixel-agents
 
 servers:
   local:
