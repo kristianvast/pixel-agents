@@ -33,6 +33,8 @@ import {
 } from './constants.js';
 import { FileStateAdapter } from './fileStateAdapter.js';
 import { claudeProvider, copyHookScript, hookProviderById } from './providers/index.js';
+import { resolveHerdrBin } from './providers/omo/herdrClient.js';
+import { OmoSource } from './providers/omo/omoSource.js';
 import { PixelAgentsServer } from './server.js';
 import { PtySessionManager } from './terminal/ptySessionManager.js';
 import { isLoopbackHost, normalizeHostname } from './wsAuth.js';
@@ -40,6 +42,7 @@ import { isLoopbackHost, normalizeHostname } from './wsAuth.js';
 // ── Argument parsing ──────────────────────────────────────────
 
 export interface CliArgs {
+  source: 'omo' | 'claude';
   /** Unset -> ephemeral (OS-assigned) port, so multiple standalone instances
    *  can run at once without a collision. --port picks a fixed one. */
   port?: number;
@@ -55,13 +58,14 @@ export interface CliArgs {
   rotateToken: boolean;
 }
 
-/** Thrown by parseArgs on an invalid --port. Kept separate from process.exit so
+/** Thrown by parseArgs on invalid CLI arguments. Kept separate from process.exit so
  *  the parsing logic stays a pure, unit-testable function -- main() is the only
  *  place that turns a bad argument into an exit code. */
 export class CliArgsError extends Error {}
 
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
+    source: resolveHerdrBin() ? 'omo' : 'claude',
     host: '127.0.0.1',
     terminal: true,
     allowedHosts: [],
@@ -82,6 +86,17 @@ export function parseArgs(argv: string[]): CliArgs {
         );
       }
       args.port = parsed;
+      i++;
+    } else if (argv[i] === '--source') {
+      const source = argv[i + 1];
+      if (source !== 'omo' && source !== 'claude') {
+        throw new CliArgsError(
+          source === undefined
+            ? 'Missing value for --source: expected omo or claude.'
+            : `Invalid --source "${source}": expected omo or claude.`,
+        );
+      }
+      args.source = source;
       i++;
     } else if (argv[i] === '--host' && argv[i + 1]) {
       args.host = argv[i + 1];
@@ -106,6 +121,7 @@ export function parseArgs(argv: string[]): CliArgs {
       console.log(`Usage: pixel-agents [options]
 
 Options:
+  --source <omo|claude> Agent source (default: omo when herdr resolves, else claude)
   --port, -p <number>   Port to listen on (default: OS-assigned ephemeral port)
   --host <string>       Host to bind to (default: 127.0.0.1)
   --allowed-host <name> Also accept the tokened URL at this host name, e.g. a
@@ -227,6 +243,8 @@ async function main(): Promise<void> {
 
   // ── Store + adapter (shared settings + standalone-scoped agents/seats) ──
   const store = new AgentStateStore();
+  const herdrBin = resolveHerdrBin();
+  const omoSource = args.source === 'omo' ? new OmoSource(store, { herdrBin }) : undefined;
   const adapter = new FileStateAdapter({ namespace: 'standalone' });
   store.setAdapter(adapter);
 
@@ -248,6 +266,7 @@ async function main(): Promise<void> {
 
     // Wire hook events: HTTP POST -> runtime -> hookEventHandler -> agents
     server.onHookEvent((providerId, event) => {
+      if (omoSource) return;
       runtime.handleHookEvent(providerId, event);
     });
 
@@ -256,6 +275,7 @@ async function main(): Promise<void> {
     // Captures config from the outer scope after server.start().
     let currentConfig: { port: number; token: string } | null = null;
     const onSetHooksEnabled = async (providerId: string, enabled: boolean): Promise<void> => {
+      if (omoSource) return;
       if (!currentConfig) return;
       const provider = hookProviderById(providerId);
       if (!provider) return; // unknown id: nothing to install into
@@ -359,7 +379,10 @@ async function main(): Promise<void> {
 
     // Install hooks on startup if the persisted setting says so — gated on the
     // one-time consent to modify ~/.claude/settings.json.
-    if (runtime.hooksEnabled.current) {
+    if (omoSource) {
+      console.log(`[Pixel Agents] Source: omo (herdr ${herdrBin ?? 'not found'})`);
+      omoSource.start();
+    } else if (runtime.hooksEnabled.current) {
       let consent = getHooksConsent(claudeProvider.id) === 'granted';
       if (!consent && (await claudeProvider.areHooksInstalled())) {
         // Our hooks are already installed and already firing — a pre-consent
@@ -395,7 +418,7 @@ async function main(): Promise<void> {
 
     // Start scanning for external sessions (Claude running in user's terminal)
     const cwd = process.cwd();
-    const dirs = claudeProvider.getSessionDirs?.(cwd);
+    const dirs = omoSource ? undefined : claudeProvider.getSessionDirs?.(cwd);
     if (dirs && dirs[0]) {
       const projectDir = dirs[0];
       console.log(`[Pixel Agents] Scanning project dir: ${projectDir}`);
@@ -427,6 +450,7 @@ async function main(): Promise<void> {
       // wait for them: exiting now would cancel the SIGKILL escalation and
       // leave a child that ignores SIGHUP orphaned on a dead server.
       await ptyManager.disposeAll();
+      omoSource?.dispose();
       runtime.dispose();
       server.stop();
       process.exit(0);

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CliArgsError, parseArgs } from '../src/cli.js';
 import { CLAUDE_HOOK_EVENTS } from '../src/providers/hook/claude/constants.js';
@@ -30,23 +30,41 @@ async function getFreePort(): Promise<number> {
   });
 }
 
-async function waitForCondition(check: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + CLI_START_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (await check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error('Timed out waiting for bundled CLI startup');
+function captureStartup(child: ReturnType<typeof spawn>) {
+  let output = '';
+  const ready = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`CLI startup timed out:\n${output}`)),
+      CLI_START_TIMEOUT_MS,
+    );
+    const capture = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (/Pixel Agents server running at \S+\s/.test(output)) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    };
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`CLI exited ${code} before startup:\n${output}`));
+    });
+  });
+  return { output: () => output, ready };
 }
 
 async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.exitCode !== null) return;
+  const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 2_000);
   child.kill('SIGTERM');
-  await Promise.race([
-    new Promise<void>((resolve) => child.once('close', () => resolve())),
-    new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null) child.kill('SIGKILL');
+  await closed;
+  clearTimeout(timeout);
 }
 
 /** Run the real bundled CLI as a subprocess, returns exit code + output. */
@@ -65,6 +83,29 @@ function runCli(args: string[]): Promise<{ code: number | null; stdout: string; 
 }
 
 describe('parseArgs', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(['omo', 'claude'])('accepts the explicit %s source', (source) => {
+    expect(parseArgs(['--source', source]).source).toBe(source);
+  });
+
+  it.each([undefined, 'invalid', '--port'])('rejects invalid source operand %s', (operand) => {
+    expect(() => parseArgs(operand === undefined ? ['--source'] : ['--source', operand])).toThrow(
+      CliArgsError,
+    );
+  });
+
+  it('defaults to Claude when herdr cannot resolve', () => {
+    vi.stubEnv('PATH', '');
+    vi.stubEnv('HERDR_BIN_PATH', '');
+    expect(parseArgs([]).source).toBe('claude');
+  });
+
+  it('defaults to omo when an explicit herdr binary resolves', () => {
+    vi.stubEnv('PATH', '');
+    vi.stubEnv('HERDR_BIN_PATH', process.execPath);
+    expect(parseArgs([]).source).toBe('omo');
+  });
   // 1. No --port -> ephemeral default (unset), never a hardcoded port
   it('defaults port to undefined (ephemeral) when --port is omitted', () => {
     const args = parseArgs([]);
@@ -206,26 +247,20 @@ describe('dist/cli.js entry-point guard', () => {
   ): Promise<void> {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-workspace-'));
     const port = await getFreePort();
-    const child = spawn(process.execPath, [CLI_BUNDLE, '--port', port.toString(), '--host', host], {
-      cwd: workspaceDir,
-      env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let output = '';
-    child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    const child = spawn(
+      process.execPath,
+      [CLI_BUNDLE, '--source', 'claude', '--port', port.toString(), '--host', host],
+      {
+        cwd: workspaceDir,
+        env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const { output, ready } = captureStartup(child);
     try {
-      await waitForCondition(async () => {
-        if (child.exitCode !== null) {
-          throw new Error(`Bundled CLI exited before startup:\n${output}`);
-        }
-        try {
-          return (await fetch(`http://127.0.0.1:${port.toString()}/api/health`)).ok;
-        } catch {
-          return false;
-        }
-      });
-      await body({ output: () => output, port });
+      await ready;
+      expect((await fetch(`http://127.0.0.1:${port.toString()}/api/health`)).ok).toBe(true);
+      await body({ output, port });
     } finally {
       await stopChild(child);
       fs.rmSync(tmpHome, { recursive: true, force: true });
@@ -262,7 +297,6 @@ describe('dist/cli.js entry-point guard', () => {
   itBuilt('prints a URL carrying the token the server actually minted', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-url-'));
     await runCliServer(tmpHome, async ({ output, port }) => {
-      await waitForCondition(() => URL_LINE.test(output()));
       const url = printedUrl(output());
 
       expect(url.searchParams.get('token')).toBe(mintedToken(tmpHome));
@@ -286,7 +320,6 @@ describe('dist/cli.js entry-point guard', () => {
     await runCliServer(
       tmpHome,
       async ({ output }) => {
-        await waitForCondition(() => URL_LINE.test(output()));
         const url = printedUrl(output());
 
         expect(url.hostname).not.toBe('0.0.0.0');
@@ -306,9 +339,6 @@ describe('dist/cli.js entry-point guard', () => {
   itBuilt('starts without touching settings.json when consent has not been given', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-noconsent-'));
     await runCliServer(tmpHome, async ({ output }) => {
-      // Give the startup consent/install path time to have run (it is awaited
-      // before the "server running" line, which health readiness follows).
-      await new Promise((resolve) => setTimeout(resolve, 500));
       expect(fs.existsSync(path.join(tmpHome, '.claude', 'settings.json'))).toBe(false);
       expect(output()).toContain('needs one-time approval');
     });
@@ -345,7 +375,6 @@ describe('dist/cli.js entry-point guard', () => {
     );
 
     await runCliServer(tmpHome, async ({ output }) => {
-      await waitForCondition(() => output().includes('[Pixel Agents] Hooks installed'));
       const after = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
         permissions?: unknown;
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
@@ -398,7 +427,6 @@ describe('dist/cli.js entry-point guard', () => {
     fs.writeFileSync(path.join(tmpHome, '.pixel-agents', 'hooks'), 'not a directory');
 
     await runCliServer(tmpHome, async ({ output }) => {
-      await new Promise((resolve) => setTimeout(resolve, 500));
       expect(fs.existsSync(path.join(tmpHome, '.claude', 'settings.json'))).toBe(false);
       expect(output()).toContain('Hooks NOT installed');
       expect(output()).not.toContain('[Pixel Agents] Hooks installed');
@@ -407,7 +435,6 @@ describe('dist/cli.js entry-point guard', () => {
 
   itBuilt('installs the bundled hook script from the package root on startup', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-home-'));
-    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-workspace-'));
     // The spawned CLI has no TTY, and without prior consent the first-run gate
     // (rightly) skips hook installation there — seed consent so this test can
     // exercise the actual install path.
@@ -416,34 +443,8 @@ describe('dist/cli.js entry-point guard', () => {
       path.join(tmpHome, '.pixel-agents', 'config.json'),
       JSON.stringify({ hooksConsent: { claude: 'granted' } }),
     );
-    const port = await getFreePort();
-    const child = spawn(
-      process.execPath,
-      [CLI_BUNDLE, '--port', port.toString(), '--host', '127.0.0.1'],
-      {
-        cwd: workspaceDir,
-        env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    let output = '';
-    child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
-
-    try {
-      await waitForCondition(async () => {
-        if (child.exitCode !== null) {
-          throw new Error(`Bundled CLI exited before startup:\n${output}`);
-        }
-        try {
-          return (await fetch(`http://127.0.0.1:${port.toString()}/api/health`)).ok;
-        } catch {
-          return false;
-        }
-      });
-
+    await runCliServer(tmpHome, async () => {
       const installedHook = path.join(tmpHome, '.pixel-agents', 'hooks', 'claude-hook.js');
-      await waitForCondition(() => fs.existsSync(installedHook));
       expect(fs.readFileSync(installedHook, 'utf-8')).toContain('#!/usr/bin/env node');
       if (process.platform !== 'win32') {
         expect(fs.statSync(installedHook).mode & 0o100).toBeTruthy();
@@ -455,10 +456,6 @@ describe('dist/cli.js entry-point guard', () => {
         unknown
       >;
       expect(JSON.stringify(settings)).toContain(installedHook);
-    } finally {
-      await stopChild(child);
-      fs.rmSync(tmpHome, { recursive: true, force: true });
-      fs.rmSync(workspaceDir, { recursive: true, force: true });
-    }
+    });
   });
 });

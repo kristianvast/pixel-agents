@@ -142,7 +142,7 @@ export function handleClientMessage(
       // Standalone can launch: the agent runs in a server-side PTY streamed to
       // the browser drawer (a shell running as the operator -- privileged, like
       // every message past the read-only gate above).
-      if (!runtime || !ctx.ptyManager) break;
+      if (!runtime || !ctx.ptyManager || store.sourceProvider) break;
       // Permission posture is a persisted per-host setting, never a per-launch
       // field: the client sends only where to launch. Every launch comes from a
       // drawer row and carries its Directory's path; no directoryPath falls
@@ -251,6 +251,7 @@ export function handleClientMessage(
     }
 
     case 'setHooksEnabled': {
+      if (store.sourceProvider) break;
       const enabled = msg.enabled as boolean;
       // The provider id is echoed by the client, never originated: an unknown
       // id names nothing to install into, so it is dropped like a junk choice.
@@ -261,6 +262,7 @@ export function handleClientMessage(
     }
 
     case 'hooksConsentResponse': {
+      if (store.sourceProvider) break;
       // Fail-closed on the provider exactly like on the choice: an id naming
       // no registered provider writes nothing.
       const provider = hookProviderById(msg.providerId);
@@ -359,10 +361,18 @@ export function handleClientMessage(
       });
       break;
 
+    case 'focusAgent': {
+      const agent = store.get(msg.id as number);
+      const source = store.sourceProvider;
+      if (agent && source && agent.providerId === source.id) {
+        void source.focusAgent?.(agent).catch((error: unknown) => {
+          console.error('[Pixel Agents] Agent focus failed:', error);
+        });
+      }
+      break;
+    }
+
     default:
-      // focusAgent is handled entirely client-side in standalone (it focuses the
-      // drawer tab, which the server has no say in). exportLayout / importLayout
-      // still require IDE-specific handling.
       break;
   }
 }
@@ -448,6 +458,7 @@ function standaloneConsentEffects(
 function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   const { store, runtime, cache } = ctx;
   const adapter = store.getAdapter();
+  const providerCapabilities = store.sourceProvider ?? claudeProvider;
 
   // 0. Access, first: a read-only office hides every control that would send
   // a change (all refused by refuseReadOnly), so it must know before it draws
@@ -457,8 +468,8 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // 1. Provider capabilities (must arrive before any agent messages)
   send({
     type: 'providerCapabilities',
-    readingTools: [...claudeProvider.readingTools],
-    subagentToolNames: [...claudeProvider.subagentToolNames],
+    readingTools: [...providerCapabilities.readingTools],
+    subagentToolNames: [...providerCapabilities.subagentToolNames],
   });
 
   // 1b. Terminal availability. Gates the whole terminal UI (the + Agent button
@@ -527,7 +538,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // provider checks are async, so these land as follow-ups right after the
   // synchronous handshake; the webview's default (not installed) is the safe
   // assumption until each arrives. One status + at most one ask PER PROVIDER.
-  for (const provider of hookProviders) {
+  for (const provider of store.sourceProvider ? [] : hookProviders) {
     // One provider's unreadable settings file must degrade to
     // installed=false (matching the executor's fail-closed read: no choice
     // ever uninstalls on a guess) rather than surface as an unhandled
@@ -586,7 +597,11 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   }
 
   // 5. Restore persisted external agents (standalone only; VS Code handles its own restore)
-  runtime?.restoreExternalAgents();
+  if (!store.sourceProvider) runtime?.restoreExternalAgents();
+
+  if (store.sourceProvider) {
+    send({ type: 'workspacesLoaded', workspaces: store.getWorkspaces() });
+  }
 
   // 6. Existing agents (either just restored, or from VS Code adapter if present)
   const agentIds: number[] = [];
@@ -616,6 +631,9 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     directoryNames,
     externalAgents,
   });
+  for (const agent of store.values()) {
+    if (agent.omoInfo) send({ ...agent.omoInfo });
+  }
 
   // 7. Layout last (see step 3): flushes the webview's buffered existingAgents
   // into characters once seats are rebuilt.

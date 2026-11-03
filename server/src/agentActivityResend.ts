@@ -72,7 +72,10 @@ export function resendAgentActivity(
         type: 'agentStatus',
         id,
         status: 'waiting',
+        awaitingInput: agent.awaitingInput,
       });
+    } else if (agent.omoInfo) {
+      send({ type: 'agentStatus', id, status: 'active', awaitingInput: false });
     }
 
     // 5. Context usage

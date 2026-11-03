@@ -1,5 +1,7 @@
 import type * as vscode from 'vscode';
 
+import type { AgentOmoInfo } from '../../core/src/messages.js';
+
 export interface AgentState {
   id: number;
   sessionId: string;
@@ -34,6 +36,9 @@ export interface AgentState {
   hooksOnly?: boolean;
   /** Provider that created this agent (defaults to 'claude') */
   providerId?: string;
+  /** Live source metadata, derived from herdr and never persisted. */
+  omoInfo?: AgentOmoInfo;
+  awaitingInput?: boolean;
   /** Set when SessionEnd(reason=clear) fires; cleared when SessionStart(source=clear) reassigns */
   pendingClear?: boolean;
   /** Hook-generated tool ID for PreToolUse/PostToolUse correlation */

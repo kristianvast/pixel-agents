@@ -2,7 +2,16 @@ import { EventEmitter } from 'node:events';
 import { appendFileSync } from 'node:fs';
 
 import type { StateAdapter } from '../../core/src/adapter.js';
+import type { AgentOmoInfo, HerdrWorkspace } from '../../core/src/messages.js';
+import type { HookProvider } from '../../core/src/provider.js';
 import type { AgentState, PersistedAgent } from './types.js';
+
+export interface SourceProvider {
+  readonly id: string;
+  readonly readingTools: HookProvider['readingTools'];
+  readonly subagentToolNames: HookProvider['subagentToolNames'];
+  readonly focusAgent?: (agent: AgentState) => Promise<void>;
+}
 
 /**
  * CI / e2e diagnostics: when PIXEL_AGENTS_DEBUG_LOG points to a writable
@@ -48,6 +57,25 @@ export class AgentStateStore {
   readonly nextAgentId = { current: 1 };
   readonly nextTerminalIndex = { current: 1 };
   private adapter: StateAdapter | undefined;
+  sourceProvider?: SourceProvider;
+  private workspaces: HerdrWorkspace[] = [];
+
+  getWorkspaces(): HerdrWorkspace[] {
+    return this.workspaces.map((workspace) => ({ ...workspace }));
+  }
+
+  setWorkspaces(workspaces: HerdrWorkspace[]): void {
+    if (JSON.stringify(this.workspaces) === JSON.stringify(workspaces)) return;
+    this.workspaces = workspaces.map((workspace) => ({ ...workspace }));
+    this.broadcast({ type: 'workspacesLoaded', workspaces: this.getWorkspaces() });
+  }
+
+  setOmoInfo(id: number, info: AgentOmoInfo): void {
+    const agent = this.get(id);
+    if (!agent || JSON.stringify(agent.omoInfo) === JSON.stringify(info)) return;
+    agent.omoInfo = info;
+    this.broadcast({ ...info });
+  }
 
   // ── Adapter ──────────────────────────────────────────────────
 
@@ -155,7 +183,7 @@ export class AgentStateStore {
       // Background-spawn children are derived state: the 1s scan re-materializes
       // them from sidecars after a restore. Persisting them would resurrect
       // immortal characters whose completion signal never comes.
-      if (agent.spawnToolUseId) continue;
+      if (agent.spawnToolUseId || agent.providerId === 'omo') continue;
       persisted.push({
         id: agent.id,
         sessionId: agent.sessionId,
